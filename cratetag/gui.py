@@ -2217,6 +2217,8 @@ class MainWindow(QMainWindow):
             self._align_buttons()
         return super().eventFilter(obj, e)
 
+    STOP_NUDGE = 18  # Stop sits this far left of the Written card's edge
+
     def _align_buttons(self):
         """Start Analyze at the left edge of the Ready to write card above it."""
         cards = self.stages.cards
@@ -2226,7 +2228,7 @@ class MainWindow(QMainWindow):
         self.opts_left.setFixedWidth(left_w)
         # Stop under Written: Analyze's box reaches from Ready's left edge to Written's left edge
         gap = self.opts_layout.spacing()
-        box_w = cards["written"].x() - left_w - gap
+        box_w = cards["written"].x() - left_w - gap - self.STOP_NUDGE
         self.analyze_box.setFixedWidth(max(box_w, self.analyze_btn.sizeHint().width() + 32))
 
     def _show_side_page(self, page: str | None, save: bool = True):

@@ -1109,7 +1109,7 @@ def test_deck_default_columns_and_button_order(app, monkeypatch):
         return w.mapTo(win, w.rect().topLeft()).x()
     ready, written = win.stages.cards["ready"], win.stages.cards["written"]
     assert left(ready) <= left(win.analyze_btn) < left(written)  # Analyze under Ready to write, next to Stop
-    assert abs(left(win.stop_btn) - left(written)) <= 10
+    assert 5 <= left(written) - left(win.stop_btn) <= 30  # just left of the Written card
     gap = left(win.stop_btn) - (left(win.analyze_btn) + win.analyze_btn.width())
     assert 20 <= gap <= 50, gap
     win.close()
