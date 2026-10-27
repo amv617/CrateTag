@@ -5,7 +5,7 @@
 # anything missing, builds CrateTag.app, puts it in Applications and opens it.
 #
 # Run it from Terminal (works even though the file came from a download):
-#   bash ~/Downloads/CrateTag/"Install CrateTag.command"
+#   bash ~/Downloads/CrateTag/"Install CrateTag.command"   (or CrateTag-main, if downloaded from GitHub)
 set -uo pipefail
 cd "$(dirname "$0")"
 HERE="$(pwd)"

@@ -13,6 +13,8 @@ from . import __version__
 GITHUB_REPO = "amv617/CrateTag"
 REPO_URL = f"https://github.com/{GITHUB_REPO}"
 VERSION_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/cratetag/__init__.py"
+# GitHub's API returns the file as it is right now; raw.githubusercontent.com can lag a few minutes behind.
+API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/cratetag/__init__.py?ref=main"
 
 
 def parse_version(text: str) -> str | None:
@@ -34,13 +36,22 @@ def latest_version(timeout: float = 8.0, get=None) -> str:
         import requests
 
         def get(url):
-            r = requests.get(url, timeout=timeout, headers={"Cache-Control": "no-cache"})
+            headers = {"Cache-Control": "no-cache"}
+            if url == API_URL:
+                headers["Accept"] = "application/vnd.github.raw"
+            r = requests.get(url, timeout=timeout, headers=headers)
             r.raise_for_status()
             return r.text
-    try:
-        text = get(VERSION_URL)
-    except Exception as e:  # noqa: BLE001
-        raise OSError(f"Couldn't reach GitHub: {e}") from e
+    text, last = "", None
+    for url in (API_URL, VERSION_URL):  # the API first (no delay); the raw file if the API is busy
+        try:
+            text = get(url)
+            if parse_version(text):
+                break
+        except Exception as e:  # noqa: BLE001
+            last = e
+    if not text and last is not None:
+        raise OSError(f"Couldn't reach GitHub: {last}") from last
     v = parse_version(text)
     if not v:
         raise OSError("GitHub's copy didn't have a version number")

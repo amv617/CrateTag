@@ -699,3 +699,27 @@ def test_updater_pulls_latest_from_github_into_git_folder(tmp_path):
     assert "before CrateTag update" in stash                 # local edit kept safely in a stash
     log = subprocess.run(["git", "log", "--oneline", "before-update"], cwd=mine, capture_output=True, text=True).stdout
     assert "1.0" in log                                      # the old version is kept in a branch
+
+
+def test_update_check_prefers_github_api_then_raw():
+    from cratetag import updates
+    calls = []
+
+    def get_ok(url):
+        calls.append(url)
+        return '__version__ = "1.2.3"\n'
+    assert updates.latest_version(get=get_ok) == "1.2.3" and calls == [updates.API_URL]
+
+    calls.clear()
+
+    def api_busy(url):
+        calls.append(url)
+        if url == updates.API_URL:
+            raise RuntimeError("403 rate limited")
+        return '__version__ = "1.2.4"\n'
+    assert updates.latest_version(get=api_busy) == "1.2.4" and calls == [updates.API_URL, updates.VERSION_URL]
+
+    def offline(url):
+        raise RuntimeError("no network")
+    with pytest.raises(OSError):
+        updates.latest_version(get=offline)

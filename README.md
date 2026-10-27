@@ -14,14 +14,16 @@
 
 ## Install (macOS)
 
-1. Download this repository as a ZIP (Code > Download ZIP) and unzip it in your Downloads folder.
-2. Open Terminal and run:
+1. On this page, click the green **Code** button, then **Download ZIP**. If the zip isn't unzipped automatically, double-click it in your Downloads folder. You'll get a folder called **CrateTag-main**.
+2. Open **Terminal** (Applications > Utilities > Terminal), paste this, and press Return:
 
    ```
-   bash ~/Downloads/CrateTag/"Install CrateTag.command"
+   bash ~/Downloads/CrateTag-main/"Install CrateTag.command"
    ```
 
-   The installer checks for Python 3.10 or newer and Homebrew, installs anything missing, builds CrateTag.app and puts it in Applications.
+   The installer checks for Python 3.10 or newer and Homebrew, installs anything missing (macOS may ask for your Mac password; nothing shows as you type), builds CrateTag.app and puts it in Applications. The first time can take 5 to 15 minutes.
+
+Keep the CrateTag-main folder: CrateTag updates itself from it.
 
 After that, CrateTag checks this repository for new versions when it opens. Click **Update to …** at the bottom right (or choose CrateTag > Check for Updates…) to install one.
 
