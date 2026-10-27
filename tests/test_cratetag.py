@@ -639,3 +639,63 @@ def test_itunes_is_a_backup_only_when_needed(tmp_path):
     Engine(Settings(use_musicbrainz=False, use_discogs=False, use_deezer=False, use_itunes=False),
            http=http).lookup(info)
     assert not any("itunes" in u for u, _ in http.calls)
+
+
+# ---------------------------------------------------------------- updating from GitHub
+
+def _fake_project(d, version):
+    (d / "cratetag").mkdir(parents=True, exist_ok=True)
+    (d / "cratetag" / "__init__.py").write_text(f'__version__ = "{version}"\nAPP_NAME = "CrateTag"\n')
+    (d / "build_mac.sh").write_text('#!/bin/bash\necho "fake build of $(sed -n 1p cratetag/__init__.py)"\n')
+    (d / "build_mac.sh").chmod(0o755)
+    (d / ".gitignore").write_text(".venv/\n")
+
+
+def test_updater_pulls_latest_from_github_into_git_folder(tmp_path):
+    import os
+    import shutil
+    import subprocess
+    if not shutil.which("git"):
+        pytest.skip("git not installed")
+    root = Path(__file__).resolve().parent.parent
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@t", "CRATETAG_NO_LAUNCH": "1", "HOME": str(tmp_path)}
+
+    def git(*a, cwd):
+        subprocess.run(["git", *a], cwd=cwd, env=env, check=True, capture_output=True)
+
+    # "GitHub": a repository with 1.0, then 1.1 pushed later
+    remote, work = tmp_path / "remote.git", tmp_path / "author"
+    git("init", "--bare", "-b", "main", str(remote), cwd=tmp_path)
+    work.mkdir()
+    _fake_project(work, "1.0")
+    shutil.copy(root / "Update CrateTag.command", work / "Update CrateTag.command")
+    git("init", "-b", "main", cwd=work)
+    git("add", ".", cwd=work)
+    git("commit", "-m", "1.0", cwd=work)
+    git("remote", "add", "origin", str(remote), cwd=work)
+    git("push", "-u", "origin", "main", cwd=work)
+
+    # Your Mac: a clone at 1.0, with a private environment and a stray local edit
+    mine = tmp_path / "Downloads" / "CrateTag"
+    mine.parent.mkdir()
+    git("clone", str(remote), str(mine), cwd=tmp_path)
+    (mine / ".venv").mkdir()
+    (mine / ".venv" / "keep.txt").write_text("python env")
+    (mine / "notes.txt").write_text("local")
+
+    (work / "cratetag" / "__init__.py").write_text('__version__ = "1.1"\nAPP_NAME = "CrateTag"\n')
+    git("commit", "-am", "1.1", cwd=work)
+    git("push", cwd=work)
+
+    r = subprocess.run(["bash", str(mine / "Update CrateTag.command"), "--github"], env=env,
+                       capture_output=True, text=True, timeout=60)
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out
+    assert "New version: 1.1" in out and 'fake build of __version__ = "1.1"' in out
+    assert '"1.1"' in (mine / "cratetag" / "__init__.py").read_text()
+    assert (mine / ".venv" / "keep.txt").exists()          # environment left alone
+    stash = subprocess.run(["git", "stash", "list"], cwd=mine, capture_output=True, text=True).stdout
+    assert "before CrateTag update" in stash                 # local edit kept safely in a stash
+    log = subprocess.run(["git", "log", "--oneline", "before-update"], cwd=mine, capture_output=True, text=True).stdout
+    assert "1.0" in log                                      # the old version is kept in a branch

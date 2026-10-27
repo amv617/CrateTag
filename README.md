@@ -23,6 +23,8 @@
 
    The installer checks for Python 3.10 or newer and Homebrew, installs anything missing, builds CrateTag.app and puts it in Applications.
 
+After that, CrateTag checks this repository for new versions when it opens. Click **Update to …** at the bottom right (or choose CrateTag > Check for Updates…) to install one.
+
 The full guide, with screenshots and troubleshooting, is in `CrateTag Guide.pdf`.
 
 ## Run from source

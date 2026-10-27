@@ -66,6 +66,7 @@ class Settings:
     crate_drive: str = "all"  # "all" or a drive's _Serato_ folder
     splitter_sizes: list = field(default_factory=list)
     shortcuts: dict = field(default_factory=dict)
+    check_updates: bool = True  # look for a newer version on GitHub at launch
     theme: str = "deck"        # "deck" (dark, 0.10+) or "classic" (the original look); applies at launch
     side_page: str = "crates"  # what the left column shows: "crates" or "folders"  # command id -> "Ctrl+R" ("" = none); only changes from defaults
 

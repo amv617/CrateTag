@@ -1110,7 +1110,8 @@ def test_deck_default_columns_and_button_order(app, monkeypatch):
     ready, written = win.stages.cards["ready"], win.stages.cards["written"]
     assert left(ready) <= left(win.analyze_btn) < left(written)  # Analyze under Ready to write, next to Stop
     assert abs(left(win.stop_btn) - left(written)) <= 10
-    assert left(win.stop_btn) - (left(win.analyze_btn) + win.analyze_btn.width()) <= 20
+    gap = left(win.stop_btn) - (left(win.analyze_btn) + win.analyze_btn.width())
+    assert 20 <= gap <= 50, gap
     win.close()
 
 
@@ -1168,4 +1169,55 @@ def test_checkbox_click_does_not_highlight(app, tmp_path, monkeypatch):
     idx = win.proxy.index(1, C_CHECK)
     QTest.mouseClick(win.view.viewport(), Qt.LeftButton, Qt.NoModifier, win.view.visualRect(idx).center())
     assert win._selected_source_rows() == [win.proxy.mapToSource(win.proxy.index(0, 0)).row()]
+    win.close()
+
+
+def test_check_for_updates_from_github(app, monkeypatch):
+    from PySide6.QtTest import QTest
+    from cratetag import updates
+    from cratetag.gui import MainWindow
+
+    assert updates.parse_version('"""x"""\n__version__ = "0.12.3"\n') == "0.12.3"
+    assert updates.is_newer("0.12.10", "0.12.9") and not updates.is_newer("0.11.2", "0.12.0")
+    assert not updates.is_newer(None)
+
+    monkeypatch.setattr(Settings, "save", lambda self: None)
+    msgs = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: msgs.append(a[2]))
+    win = MainWindow(Settings(show_crates=False))
+    launched = []
+    monkeypatch.setattr(win, "_launch_updater", lambda args, q: launched.append((args, q)) or True)
+
+    def wait():
+        for _ in range(100):
+            QTest.qWait(20)
+            if not getattr(win, "_update_checking", False):
+                return
+
+    # Nothing newer: the quiet launch-time check says nothing; a manual check says you're up to date
+    monkeypatch.setattr(updates, "latest_version", lambda: "0.0.1")
+    win.check_for_updates(quiet=True)
+    wait()
+    assert not win.update_btn.isVisible() and not msgs
+    win.check_for_updates()
+    wait()
+    assert msgs and "latest version" in msgs[-1]
+
+    # Newer on GitHub: a button appears; clicking it runs the updater in GitHub mode
+    monkeypatch.setattr(updates, "latest_version", lambda: "99.0.0")
+    win.show()
+    win.check_for_updates(quiet=True)
+    wait()
+    assert win.update_btn.isVisible() and win.update_btn.text() == "Update to 99.0.0"
+    win.update_btn.click()
+    assert launched and launched[-1][0] == ["--github"] and "99.0.0" in launched[-1][1]
+
+    # GitHub unreachable: quiet check stays silent
+    def boom():
+        raise OSError("Couldn't reach GitHub: offline")
+    monkeypatch.setattr(updates, "latest_version", boom)
+    n = len(msgs)
+    win.check_for_updates(quiet=True)
+    wait()
+    assert len(msgs) == n
     win.close()

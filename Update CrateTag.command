@@ -7,6 +7,8 @@
 # rebuilds CrateTag.app, installs it in Applications and opens it.
 #
 # You can also pass a zip or folder:  "./Update CrateTag.command" ~/Desktop/CrateTag.zip
+# Or get the latest version from GitHub (CrateTag > Check for Updates… uses this):
+#   "./Update CrateTag.command" --github
 set -euo pipefail
 
 pause_and_exit() {
@@ -73,43 +75,69 @@ echo "Installed copy: $INSTALL_DIR (version ${CURRENT:-unknown})"
 echo
 
 # 1. Find the update
+GITHUB_REPO="amv617/CrateTag"
 SOURCE="${1:-}"
-if [ -z "$SOURCE" ]; then
-  # Newest CrateTag*.zip or unzipped CrateTag* folder in Downloads (but not this folder itself)
-  while IFS= read -r f; do
-    [ -e "$f" ] || continue
-    if [ -d "$f" ]; then
-      [ "$(cd "$f" && pwd)" = "$INSTALL_DIR" ] && continue
-      [ -f "$f/cratetag/__init__.py" ] || [ -f "$f/CrateTag/cratetag/__init__.py" ] || continue
-    else
-      case "$f" in *.zip) ;; *) continue ;; esac
-    fi
-    SOURCE="$f"
-    break
-  done < <(ls -td "$HOME/Downloads"/CrateTag* 2>/dev/null)
-fi
-if [ -z "$SOURCE" ] || [ ! -e "$SOURCE" ]; then
-  echo "No CrateTag download found in your Downloads folder."
-  echo "Download the new CrateTag.zip first, then run this again."
-  pause_and_exit 1
-fi
-echo "Update found: $SOURCE"
-
+GITMODE=""
 WORK="$(mktemp -d)"
-if [ -f "$SOURCE" ]; then
-  if command -v ditto >/dev/null 2>&1; then ditto -x -k "$SOURCE" "$WORK"; else unzip -q "$SOURCE" -d "$WORK"; fi
-  NEW="$WORK/CrateTag"
-  [ -d "$NEW" ] || NEW="$(dirname "$(find "$WORK" -maxdepth 3 -path '*/cratetag/__init__.py' | head -1)")/.."
-else
-  NEW="$SOURCE"
-  [ -f "$NEW/cratetag/__init__.py" ] || NEW="$NEW/CrateTag"
+if [ "$SOURCE" = "--github" ]; then
+  echo "Checking GitHub ($GITHUB_REPO)…"
+  if [ -d "$INSTALL_DIR/.git" ] && command -v git >/dev/null 2>&1; then
+    # This folder is a Git copy of the repository: fetch the latest and update it in place below
+    GITMODE=1
+    git -C "$INSTALL_DIR" remote get-url origin >/dev/null 2>&1 || \
+      git -C "$INSTALL_DIR" remote add origin "https://github.com/$GITHUB_REPO.git"
+    if ! git -C "$INSTALL_DIR" fetch --quiet origin main; then
+      echo "Couldn't reach GitHub. Check your internet connection and try again."
+      pause_and_exit 1
+    fi
+    NEWVER="$(git -C "$INSTALL_DIR" show origin/main:cratetag/__init__.py | sed -n 's/^__version__ = "\(.*\)"/\1/p' | head -1)"
+    SOURCE="GitHub ($GITHUB_REPO)"
+  else
+    # Not a Git copy: download the latest version as a zip
+    if ! curl -fsSL "https://github.com/$GITHUB_REPO/archive/refs/heads/main.zip" -o "$WORK/main.zip"; then
+      echo "Couldn't download the update from GitHub. Check your internet connection and try again."
+      pause_and_exit 1
+    fi
+    SOURCE="$WORK/main.zip"
+  fi
 fi
-NEW="$(cd "$NEW" && pwd)"
-if [ ! -f "$NEW/cratetag/__init__.py" ]; then
-  echo "That download doesn't look like CrateTag."
-  pause_and_exit 1
+if [ -z "$GITMODE" ]; then
+  if [ -z "$SOURCE" ]; then
+    # Newest CrateTag*.zip or unzipped CrateTag* folder in Downloads (but not this folder itself)
+    while IFS= read -r f; do
+      [ -e "$f" ] || continue
+      if [ -d "$f" ]; then
+        [ "$(cd "$f" && pwd)" = "$INSTALL_DIR" ] && continue
+        [ -f "$f/cratetag/__init__.py" ] || [ -f "$f/CrateTag/cratetag/__init__.py" ] || continue
+      else
+        case "$f" in *.zip) ;; *) continue ;; esac
+      fi
+      SOURCE="$f"
+      break
+    done < <(ls -td "$HOME/Downloads"/CrateTag* 2>/dev/null)
+  fi
+  if [ -z "$SOURCE" ] || [ ! -e "$SOURCE" ]; then
+    echo "No CrateTag download found in your Downloads folder."
+    echo "Download the new CrateTag.zip first, then run this again."
+    pause_and_exit 1
+  fi
+  echo "Update found: $SOURCE"
+
+  if [ -f "$SOURCE" ]; then
+    if command -v ditto >/dev/null 2>&1; then ditto -x -k "$SOURCE" "$WORK"; else unzip -q "$SOURCE" -d "$WORK"; fi
+    NEW="$WORK/CrateTag"
+    [ -d "$NEW" ] || NEW="$(dirname "$(find "$WORK" -maxdepth 3 -path '*/cratetag/__init__.py' | head -1)")/.."
+  else
+    NEW="$SOURCE"
+    [ -f "$NEW/cratetag/__init__.py" ] || NEW="$NEW/CrateTag"
+  fi
+  NEW="$(cd "$NEW" && pwd)"
+  if [ ! -f "$NEW/cratetag/__init__.py" ]; then
+    echo "That download doesn't look like CrateTag."
+    pause_and_exit 1
+  fi
+  NEWVER="$(version_of "$NEW")"
 fi
-NEWVER="$(version_of "$NEW")"
 echo "New version: ${NEWVER:-unknown}"
 
 if [ -n "$CURRENT" ] && [ "$CURRENT" = "$NEWVER" ] && [ -z "${CRATETAG_FORCE:-}" ]; then
@@ -125,10 +153,24 @@ fi
 
 # 3. Copy the new files in (keeps the private Python environment so this stays fast)
 echo
-echo "Copying files…"
-if command -v rsync >/dev/null 2>&1; then
+if [ -n "$GITMODE" ]; then
+  echo "Updating files from GitHub…"
+  # Keep anything local, just in case: uncommitted changes go in a stash, the old version in a branch
+  git -C "$INSTALL_DIR" rev-parse --verify HEAD >/dev/null 2>&1 && \
+    git -C "$INSTALL_DIR" branch -f before-update HEAD >/dev/null 2>&1 || true
+  if [ -n "$(git -C "$INSTALL_DIR" status --porcelain 2>/dev/null)" ]; then
+    git -C "$INSTALL_DIR" stash push --include-untracked --quiet -m "Local changes before CrateTag update" || true
+  fi
+  if ! git -C "$INSTALL_DIR" checkout --quiet -B main origin/main; then
+    echo "Couldn't update the files from GitHub. Nothing was installed."
+    pause_and_exit 1
+  fi
+  git -C "$INSTALL_DIR" branch --quiet --set-upstream-to=origin/main main 2>/dev/null || true
+elif command -v rsync >/dev/null 2>&1; then
+  echo "Copying files…"
   rsync -a --exclude '.git' --exclude '.venv' --exclude 'build' --exclude 'dist' --exclude '__pycache__' "$NEW/" "$INSTALL_DIR/"
 else
+  echo "Copying files…"
   (cd "$NEW" && tar cf - --exclude .git --exclude .venv --exclude build --exclude dist .) | (cd "$INSTALL_DIR" && tar xf -)
 fi
 chmod +x "$INSTALL_DIR"/*.sh "$INSTALL_DIR"/*.command 2>/dev/null || true
@@ -150,7 +192,7 @@ echo "CrateTag ${NEWVER} is installed in Applications."
 if [ -z "${CRATETAG_NO_LAUNCH:-}" ] && command -v open >/dev/null 2>&1; then
   open "/Applications/CrateTag.app" || true
 fi
-if [ -f "$SOURCE" ]; then
+if [ -z "$GITMODE" ] && [ -f "$SOURCE" ] && [ "$(dirname "$SOURCE")" = "$HOME/Downloads" ]; then
   echo "You can delete $(basename "$SOURCE") from Downloads."
 fi
 close_this_window

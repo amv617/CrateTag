@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import (QAbstractTableModel, QEvent, QFileSystemWatcher, QItemSelectionModel, QModelIndex,
-                            QPoint, QPointF, QRect, QRectF, QSize, QSortFilterProxyModel, Qt, QThread, QTimer, QUrl, Signal)
+                            QObject, QPoint, QPointF, QRect, QRectF, QSize, QSortFilterProxyModel, Qt, QThread, QTimer, QUrl, Signal)
 from PySide6.QtGui import (QAction, QBrush, QColor, QDesktopServices, QFont, QIcon, QKeySequence, QPainter,
                            QPixmap,
                            QPainterPath, QPen)
@@ -1040,6 +1040,13 @@ class SettingsDialog(QDialog):
         h.addRow(self.keep_mtime)
         lay.addWidget(wr)
 
+        up = QGroupBox("Updates")
+        ul = QVBoxLayout(up)
+        self.check_updates = QCheckBox("Check GitHub for a new version when CrateTag opens")
+        self.check_updates.setChecked(getattr(settings, "check_updates", True))
+        ul.addWidget(self.check_updates)
+        lay.addWidget(up)
+
         self.keys = ShortcutsEditor(settings.shortcuts)
         self.tabs.addTab(self.keys, "Keyboard Shortcuts")
 
@@ -1090,6 +1097,7 @@ class SettingsDialog(QDialog):
         s.backup_dir = self.backup_dir.text().strip() or s.backup_dir
         s.keep_modified_date = self.keep_mtime.isChecked()
         s.shortcuts = self.keys.overrides()
+        s.check_updates = self.check_updates.isChecked()
 
 
 def _native(seq: str) -> str:
@@ -1704,6 +1712,11 @@ def app_icon() -> QIcon:
     return QIcon(str(p)) if p.exists() else QIcon()
 
 
+class _UpdateSignal(QObject):
+    """Carries the GitHub update check's answer from its background thread to the window."""
+    done = Signal(object, object, bool)  # latest version, error text, quiet
+
+
 def _terminal_script(cmd: str) -> str:
     """AppleScript that runs cmd in Terminal. If Terminal wasn't open, it opens with an empty window of its own;
     run the command in that window instead of opening a second one, so no blank window is left behind."""
@@ -1857,6 +1870,15 @@ class MainWindow(QMainWindow):
         self.progress = QProgressBar()
         self.progress.setMaximumWidth(260)
         self.progress.setVisible(False)
+        self.update_btn = QPushButton("Update")
+        self.update_btn.setObjectName("PrimaryBtn" if self.deck else "")
+        self.update_btn.setCursor(Qt.PointingHandCursor)
+        self.update_btn.setToolTip("A newer CrateTag is on GitHub. Click to install it.")
+        self.update_btn.clicked.connect(self.install_update)
+        self.update_btn.setVisible(False)
+        self.statusBar().addPermanentWidget(self.update_btn)
+        self._update_signal = _UpdateSignal(self)
+        self._update_signal.done.connect(self._update_checked)
         self.count_label = QLabel()
         self.count_label.setContentsMargins(0, 0, 18, 0)  # keep the counts off the window's edge
         self.statusBar().addPermanentWidget(self.count_label)
@@ -2019,8 +2041,11 @@ class MainWindow(QMainWindow):
         hm.addAction(mk("Activity Log…", self.show_activity_log, "activity_log"))
         hm.addSeparator()
         hm.addAction(mk("Keyboard Shortcuts…", lambda: self.open_settings(tab="shortcuts"), None))
+        chk = mk("Check for Updates…", self.check_for_updates, "check_updates")
+        chk.setMenuRole(QAction.ApplicationSpecificRole)  # lands in the CrateTag menu on macOS
+        hm.addAction(chk)
         upd = mk("Update from Downloads…", self.update_from_downloads, "update")
-        upd.setMenuRole(QAction.ApplicationSpecificRole)  # lands in the CrateTag menu on macOS
+        upd.setMenuRole(QAction.ApplicationSpecificRole)
         hm.addAction(upd)
         self.apply_shortcuts()
 
@@ -2140,7 +2165,8 @@ class MainWindow(QMainWindow):
         self.analyze_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
         self.analyze_btn.setCursor(Qt.PointingHandCursor)
         ab.addStretch(1)
-        ab.addWidget(self.analyze_btn)  # right next to Stop
+        ab.addWidget(self.analyze_btn)
+        ab.addSpacing(24)  # a little room between Analyze and Stop
         opts.addWidget(self.analyze_box)
         self.stop_btn = tbtn(self.a_stop, "GhostBtn")
         opts.addStretch(1)
@@ -2201,7 +2227,7 @@ class MainWindow(QMainWindow):
         # Stop under Written: Analyze's box reaches from Ready's left edge to Written's left edge
         gap = self.opts_layout.spacing()
         box_w = cards["written"].x() - left_w - gap
-        self.analyze_box.setFixedWidth(max(box_w, self.analyze_btn.sizeHint().width() + 8))
+        self.analyze_box.setFixedWidth(max(box_w, self.analyze_btn.sizeHint().width() + 32))
 
     def _show_side_page(self, page: str | None, save: bool = True):
         """Deck: show the crates or the folder browser in the left column, or hide it (None)."""
@@ -2394,6 +2420,10 @@ class MainWindow(QMainWindow):
         return None
 
     def update_from_downloads(self):
+        self._launch_updater([], "Update CrateTag from the newest CrateTag download in your Downloads folder?")
+
+    def _launch_updater(self, args: list[str], question: str | None) -> bool:
+        """Run "Update CrateTag.command" (with args) in Terminal. It quits CrateTag, updates, rebuilds and reopens."""
         src = self._source_dir()
         script = src / "Update CrateTag.command" if src else None
         if not script or not script.exists():
@@ -2401,34 +2431,86 @@ class MainWindow(QMainWindow):
                 self, APP_NAME,
                 "Couldn't find the CrateTag folder this app was built from.\n\n"
                 "Open your CrateTag folder in Finder and double-click \"Update CrateTag.command\".")
-            return
+            return False
         if self._busy():
             QMessageBox.information(self, APP_NAME, "Wait for the current job to finish (or click Stop) first.")
-            return
-        ans = QMessageBox.question(
-            self, APP_NAME,
-            "Update CrateTag from the newest CrateTag download in your Downloads folder?\n\n"
-            "CrateTag will close, a Terminal window will show the progress, and the new version "
-            "opens when it's done (about a minute).")
-        if ans != QMessageBox.Yes:
-            return
+            return False
+        if question:
+            n = self._unsaved_count()
+            extra = (f"\n\nYou have {n} track{'s' if n != 1 else ''} with changes that haven't been written yet; "
+                     "they'll be lost.") if n else ""
+            ans = QMessageBox.question(
+                self, APP_NAME,
+                question + "\n\nCrateTag will close, a Terminal window will show the progress, and the new version "
+                "opens when it's done (about a minute)." + extra)
+            if ans != QMessageBox.Yes:
+                return False
         # Run the updater as a bash command inside Terminal. Opening the .command file directly
         # gets blocked by macOS Gatekeeper because it came from a download; bash running it does not.
         # The updater quits CrateTag itself once it has started, so we don't close here.
+        activity.info(f"Update   starting the updater {' '.join(args)}".rstrip())
         try:
             if sys.platform == "darwin":
-                cmd = "bash " + shlex.quote(str(script))
+                cmd = " ".join(["bash", shlex.quote(str(script)), *[shlex.quote(a) for a in args]])
                 apple = _terminal_script(cmd)
                 proc = subprocess.Popen(["osascript", "-e", apple], stdout=subprocess.DEVNULL,
                                         stderr=subprocess.PIPE, text=True, env=_clean_env())
                 self._watch_updater_launch(proc, script, 0)
             else:
-                subprocess.Popen(["bash", str(script)], env=_clean_env())
+                subprocess.Popen(["bash", str(script), *args], env=_clean_env())
         except OSError as e:
             QMessageBox.warning(self, APP_NAME, f"Couldn't start the updater:\n{e}")
-            return
+            return False
         self.statusBar().showMessage(
             "Starting the updater in Terminal. If macOS asks to let CrateTag control Terminal, click Allow.", 20000)
+        return True
+
+    # ---- updates from GitHub
+    def check_for_updates(self, *_, quiet: bool = False):
+        """Ask GitHub for the newest version (in the background). quiet: say nothing unless there's an update."""
+        import threading
+        from . import updates
+        if getattr(self, "_update_checking", False):
+            return
+        self._update_checking = True
+        if not quiet:
+            self.statusBar().showMessage("Checking GitHub for updates…", 8000)
+        sig = self._update_signal
+
+        def run():
+            try:
+                sig.done.emit(updates.latest_version(), None, quiet)
+            except OSError as e:
+                sig.done.emit(None, str(e), quiet)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _update_checked(self, latest, error, quiet):
+        from . import updates
+        self._update_checking = False
+        if error:
+            activity.warn(f"Update   check failed: {error}")
+            if not quiet:
+                QMessageBox.information(self, APP_NAME, f"{error}\n\nCheck your internet connection and try again.")
+            return
+        activity.info(f"Update   GitHub has {latest}; this is {__version__}")
+        if updates.is_newer(latest):
+            self._available_update = latest
+            self.update_btn.setText(f"Update to {latest}")
+            self.update_btn.setVisible(True)
+            self.statusBar().showMessage(f"CrateTag {latest} is available. Click \"Update to {latest}\" at the "
+                                         "bottom right to install it.", 30000)
+            if not quiet:
+                self.install_update()
+        elif not quiet:
+            QMessageBox.information(self, APP_NAME, f"You have the latest version, {__version__}.")
+
+    def install_update(self):
+        latest = getattr(self, "_available_update", None)
+        if not latest:
+            self.check_for_updates()
+            return
+        self._launch_updater(["--github"], f"Install CrateTag {latest} from GitHub? (You have {__version__}.)")
 
     def _watch_updater_launch(self, proc, script: Path, waited: int):
         """If macOS refuses to let CrateTag drive Terminal, say how to fix it instead of failing silently."""
@@ -3473,4 +3555,6 @@ def main() -> int:
         T.apply_palette(app)
     w = MainWindow(settings)
     w.show()
+    if settings.check_updates:
+        QTimer.singleShot(4000, lambda: w.check_for_updates(quiet=True))
     return app.exec()

@@ -51,6 +51,7 @@ COMMANDS: list[Command] = [
     Command("browse_folders", "Browse Folders", "View", "Ctrl+Shift+F"),
     Command("palette", "Command Palette…", "View", "Ctrl+K"),
     Command("activity_log", "Activity Log…", "Help", "Ctrl+Alt+L"),
+    Command("check_updates", "Check for Updates…", "Help"),
     Command("update", "Update from Downloads…", "Help"),
 ]
 
