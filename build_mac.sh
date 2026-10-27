@@ -4,6 +4,8 @@
 #         ./build_mac.sh --test            run the tests first
 #         ./build_mac.sh --install         also replace /Applications/CrateTag.app
 #         ./build_mac.sh --test --install  both
+#         ./build_mac.sh --dmg             also package dist/CrateTag-<version>.dmg (what GitHub builds
+#                                          for people who install by dragging the app to Applications)
 set -euo pipefail
 cd "$(dirname "$0")"
 HERE="$(pwd)"
@@ -22,10 +24,12 @@ APPS="${CRATETAG_APPS_DIR:-/Applications}"   # where CrateTag.app is installed
 
 RUN_TESTS=0
 INSTALL=0
+DMG=0
 for arg in "$@"; do
   case "$arg" in
     --test) RUN_TESTS=1 ;;
     --install) INSTALL=1 ;;
+    --dmg) DMG=1 ;;
     *) echo "Unknown option: $arg"; exit 2 ;;
   esac
 done
@@ -52,10 +56,15 @@ if [ "$RUN_TESTS" = 1 ]; then
   QT_QPA_PLATFORM=offscreen python -m pytest -q tests
 fi
 
-# Let the built app know where its source folder is, for CrateTag > Update from Downloads…
-python - "$HERE" <<'EOF'
+VERSION="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' cratetag/__init__.py | head -1)"
+
+# Let the built app know how it was installed. Built here: where its source folder is, so updates rebuild
+# from it. Built for a .dmg: no source folder, so updates download the newer .dmg instead.
+python - "$HERE" "$DMG" <<'EOF'
 import json, sys
-open("cratetag/_build_info.py", "w").write("SOURCE_DIR = %s\n" % json.dumps(sys.argv[1]))
+here, dmg = sys.argv[1], sys.argv[2] == "1"
+open("cratetag/_build_info.py", "w").write(
+    "SOURCE_DIR = %s\nDIST = %s\n" % ("None" if dmg else json.dumps(here), json.dumps("dmg" if dmg else "source")))
 EOF
 
 # Quit CrateTag and move the installed copy out of the way while building, so nothing can pick up
@@ -108,8 +117,37 @@ if [ "$(uname)" = Darwin ] && [ ! -d dist/CrateTag.app ]; then
   exit 1
 fi
 
+# Show the version in Finder's Get Info, then re-sign (ad hoc) since the Info.plist changed
+if [ "$(uname)" = Darwin ] && [ -n "$VERSION" ]; then
+  plutil -replace CFBundleShortVersionString -string "$VERSION" dist/CrateTag.app/Contents/Info.plist 2>/dev/null || true
+  plutil -replace CFBundleVersion -string "$VERSION" dist/CrateTag.app/Contents/Info.plist 2>/dev/null || true
+  codesign --force --deep --sign - dist/CrateTag.app >>"$LOG" 2>&1 || true
+fi
+
 echo
 echo "Built: $HERE/dist/CrateTag.app"
+
+if [ "$DMG" = 1 ] && [ "$(uname)" = Darwin ]; then
+  STAGE="$(mktemp -d)/CrateTag"
+  mkdir -p "$STAGE"
+  ditto dist/CrateTag.app "$STAGE/CrateTag.app"
+  ln -s /Applications "$STAGE/Applications"
+  cat > "$STAGE/Read Me First.txt" <<'TXT'
+Install CrateTag
+
+1. Drag CrateTag onto the Applications folder.
+2. Open Applications and double-click CrateTag.
+
+The first time, macOS may say CrateTag can't be opened. Click Done, then:
+open System Settings > Privacy & Security, scroll down to the message about
+CrateTag, click "Open Anyway", and confirm. You only have to do this once.
+
+After that, CrateTag shows an "Update" button when a new version is out.
+TXT
+  hdiutil create -quiet -volname "CrateTag $VERSION" -srcfolder "$STAGE" -ov -format UDZO "dist/CrateTag-$VERSION.dmg"
+  rm -rf "$(dirname "$STAGE")"
+  echo "Disk image: $HERE/dist/CrateTag-$VERSION.dmg"
+fi
 
 if [ "$INSTALL" = 1 ]; then
   osascript -e 'tell application "CrateTag" to quit' >/dev/null 2>&1 || true

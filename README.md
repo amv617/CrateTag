@@ -14,6 +14,16 @@
 
 ## Install (macOS)
 
+### The easy way: download the .dmg (Apple Silicon Macs)
+
+1. Go to [Releases](https://github.com/amv617/CrateTag/releases/latest) and download **CrateTag-….dmg** under Assets.
+2. Open it and drag **CrateTag** onto **Applications**.
+3. Double-click CrateTag in Applications. The first time, macOS says it can't verify the app: click **Done**, open **System Settings > Privacy & Security**, scroll down, click **Open Anyway** next to the CrateTag message, and confirm. You only do this once.
+
+When a new version is out, CrateTag shows an **Update to …** button at the bottom right. One click downloads it and reopens CrateTag updated.
+
+### The Terminal way: build it yourself (any Mac, including Intel)
+
 1. On this page, click the green **Code** button, then **Download ZIP**. If the zip isn't unzipped automatically, double-click it in your Downloads folder. You'll get a folder called **CrateTag-main**.
 2. Open **Terminal** (Applications > Utilities > Terminal), paste this, and press Return:
 
@@ -25,7 +35,7 @@
 
 Keep the CrateTag-main folder: CrateTag updates itself from it.
 
-After that, CrateTag checks this repository for new versions when it opens. Click **Update to …** at the bottom right (or choose CrateTag > Check for Updates…) to install one.
+After that, CrateTag checks this repository for new versions when it opens. Click **Update to …** at the bottom right (or choose CrateTag > Check for Updates…) to rebuild it from the newest code.
 
 The full guide, with screenshots and troubleshooting, is in `CrateTag Guide.pdf`.
 

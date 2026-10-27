@@ -1,0 +1,65 @@
+# Builds CrateTag.app on a Mac, packages it as a .dmg, and publishes it as a GitHub Release
+# whenever a new version (cratetag/__init__.py) reaches main. Already-released versions are skipped.
+name: Build Mac app
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cratetag/**"
+      - "main.py"
+      - "requirements.txt"
+      - "build_mac.sh"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  dmg:
+    runs-on: macos-14   # Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: v
+        run: echo "version=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' cratetag/__init__.py | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Already released?
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ steps.v.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=1" >> "$GITHUB_OUTPUT"
+            echo "v${{ steps.v.outputs.version }} is already released; nothing to do."
+          else
+            echo "exists=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.check.outputs.exists == '0'
+        with:
+          python-version: "3.12"
+
+      - name: Test and build the .dmg
+        if: steps.check.outputs.exists == '0'
+        run: |
+          chmod +x build_mac.sh install_deps.sh
+          CRATETAG_PYTHON="$(which python)" ./build_mac.sh --test --dmg
+          cat "$HOME/Library/Logs/CrateTag/build.log" | tail -20 || true
+
+      - name: Publish the release
+        if: steps.check.outputs.exists == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER="${{ steps.v.outputs.version }}"
+          git log -1 --format=%B | sed '/^Co-Authored-By:/d;/^Claude-Session:/d' > notes.md
+          printf '\n---\n**Install:** download CrateTag-%s.dmg below, open it, and drag CrateTag to Applications. The first time, macOS may block it: open System Settings > Privacy & Security and click **Open Anyway**. Apple Silicon (M1 and newer) Macs.\n' "$VER" >> notes.md
+          gh release create "v$VER" "dist/CrateTag-$VER.dmg" --title "CrateTag $VER" --notes-file notes.md --latest

@@ -1715,6 +1715,7 @@ def app_icon() -> QIcon:
 class _UpdateSignal(QObject):
     """Carries the GitHub update check's answer from its background thread to the window."""
     done = Signal(object, object, bool)  # latest version, error text, quiet
+    downloaded = Signal(str, str)        # path of the downloaded .dmg, error text
 
 
 def _terminal_script(cmd: str) -> str:
@@ -1879,6 +1880,7 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.update_btn)
         self._update_signal = _UpdateSignal(self)
         self._update_signal.done.connect(self._update_checked)
+        self._update_signal.downloaded.connect(self._dmg_downloaded)
         self.count_label = QLabel()
         self.count_label.setContentsMargins(0, 0, 18, 0)  # keep the counts off the window's edge
         self.statusBar().addPermanentWidget(self.count_label)
@@ -2047,6 +2049,9 @@ class MainWindow(QMainWindow):
         upd = mk("Update from Downloads…", self.update_from_downloads, "update")
         upd.setMenuRole(QAction.ApplicationSpecificRole)
         hm.addAction(upd)
+        from . import updates as _updates
+        if _updates.install_kind() == "dmg":
+            upd.setVisible(False)  # installed from the .dmg: there's no CrateTag folder to update from
         self.apply_shortcuts()
 
     # ---- Deck layout
@@ -2479,9 +2484,16 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Checking GitHub for updates…", 8000)
         sig = self._update_signal
 
+        kind = updates.install_kind()
+
         def run():
             try:
-                sig.done.emit(updates.latest_version(), None, quiet)
+                if kind == "dmg":
+                    rel = updates.latest_release()
+                    self._release = rel
+                    sig.done.emit(rel["version"], None, quiet)
+                else:
+                    sig.done.emit(updates.latest_version(), None, quiet)
             except OSError as e:
                 sig.done.emit(None, str(e), quiet)
 
@@ -2512,7 +2524,79 @@ class MainWindow(QMainWindow):
         if not latest:
             self.check_for_updates()
             return
+        from . import updates
+        if updates.install_kind() == "dmg":
+            self._install_dmg_update(latest)
+            return
         self._launch_updater(["--github"], f"Install CrateTag {latest} from GitHub? (You have {__version__}.)")
+
+    # ---- updating a copy installed from the .dmg
+    def _app_bundle(self) -> Path | None:
+        exe = Path(sys.executable).resolve()
+        for p in exe.parents:
+            if p.suffix == ".app":
+                return p
+        return None
+
+    def _install_dmg_update(self, latest: str):
+        import tempfile
+        import threading
+        rel = getattr(self, "_release", None)
+        app = self._app_bundle()
+        if not rel or not rel.get("dmg_url") or app is None:
+            QMessageBox.information(self, APP_NAME, "Download the newest CrateTag .dmg from "
+                                    "github.com/amv617/CrateTag/releases and drag CrateTag to Applications.")
+            return
+        if self._busy():
+            QMessageBox.information(self, APP_NAME, "Wait for the current job to finish (or click Stop) first.")
+            return
+        n = self._unsaved_count()
+        extra = (f"\n\nYou have {n} track{'s' if n != 1 else ''} with changes that haven't been written yet; "
+                 "they'll be lost.") if n else ""
+        if QMessageBox.question(
+                self, APP_NAME,
+                f"Install CrateTag {latest}? (You have {__version__}.)\n\nCrateTag downloads it, closes, "
+                "and reopens as the new version in a few seconds." + extra) != QMessageBox.Yes:
+            return
+        dest = Path(tempfile.mkdtemp()) / f"CrateTag-{latest}.dmg"
+        self.update_btn.setEnabled(False)
+        self.statusBar().showMessage(f"Downloading CrateTag {latest}…")
+        sig = self._update_signal
+
+        def run():
+            try:
+                import requests
+                with requests.get(rel["dmg_url"], stream=True, timeout=30) as r:
+                    r.raise_for_status()
+                    with open(dest, "wb") as fh:
+                        for chunk in r.iter_content(1 << 16):
+                            fh.write(chunk)
+                sig.downloaded.emit(str(dest), "")
+            except Exception as e:  # noqa: BLE001
+                sig.downloaded.emit("", str(e))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _dmg_downloaded(self, path: str, error: str):
+        from . import updates
+        self.update_btn.setEnabled(True)
+        if error or not path:
+            activity.warn(f"Update   download failed: {error}")
+            QMessageBox.warning(self, APP_NAME, f"Couldn't download the update:\n{error}")
+            return
+        app = self._app_bundle()
+        script = Path(path).with_name("swap.sh")
+        script.write_text(updates.SWAP_SCRIPT)
+        activity.info(f"Update   downloaded {Path(path).name}; installing over {app}")
+        try:
+            subprocess.Popen(["/bin/bash", str(script), str(app), path, str(os.getpid())],
+                             start_new_session=True, env=_clean_env(),
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError as e:
+            QMessageBox.warning(self, APP_NAME, f"Couldn't start the update:\n{e}")
+            return
+        self._quitting_for_update = True
+        QApplication.quit()
 
     def _watch_updater_launch(self, proc, script: Path, waited: int):
         """If macOS refuses to let CrateTag drive Terminal, say how to fix it instead of failing silently."""

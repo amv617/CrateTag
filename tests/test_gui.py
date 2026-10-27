@@ -1221,3 +1221,47 @@ def test_check_for_updates_from_github(app, monkeypatch):
     wait()
     assert len(msgs) == n
     win.close()
+
+
+def test_dmg_install_updates_from_github_release(app, tmp_path, monkeypatch):
+    import subprocess as sp
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+    from cratetag import updates
+    from cratetag.gui import MainWindow
+
+    rel = {"tag_name": "v9.9.9", "body": "notes", "assets": [
+        {"name": "CrateTag-9.9.9.dmg", "browser_download_url": "https://github.com/x/CrateTag-9.9.9.dmg", "size": 5}]}
+    got = updates.latest_release(get_json=lambda url: rel)
+    assert got["version"] == "9.9.9" and got["dmg_url"].endswith(".dmg")
+    with pytest.raises(OSError):
+        updates.latest_release(get_json=lambda url: {"tag_name": "v1.0", "assets": []})
+
+    monkeypatch.setattr(updates, "install_kind", lambda: "dmg")
+    monkeypatch.setattr(updates, "latest_release", lambda: got)
+    monkeypatch.setattr(Settings, "save", lambda self: None)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    win = MainWindow(Settings(show_crates=False))
+    upd_action = win.cmd["update"]
+    assert not upd_action.isVisible()  # no "Update from Downloads" for .dmg installs
+    win.show()
+    win.check_for_updates(quiet=True)
+    for _ in range(100):
+        QTest.qWait(20)
+        if not win._update_checking:
+            break
+    assert win.update_btn.isVisible() and win.update_btn.text() == "Update to 9.9.9"
+
+    # After the download, the swap helper is started and CrateTag quits
+    app_dir = tmp_path / "Applications" / "CrateTag.app"
+    app_dir.mkdir(parents=True)
+    monkeypatch.setattr(win, "_app_bundle", lambda: app_dir)
+    started, quit_called = [], []
+    monkeypatch.setattr(sp, "Popen", lambda args, **k: started.append(args))
+    monkeypatch.setattr(QApplication, "quit", lambda: quit_called.append(1))
+    dmg = tmp_path / "CrateTag-9.9.9.dmg"
+    dmg.write_bytes(b"x")
+    win._dmg_downloaded(str(dmg), "")
+    assert started and started[0][0] == "/bin/bash" and started[0][2] == str(app_dir) and started[0][3] == str(dmg)
+    assert "hdiutil attach" in (tmp_path / "swap.sh").read_text() and quit_called
+    win.close()
