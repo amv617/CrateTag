@@ -1,0 +1,14 @@
+# Python environment and caches (rebuilt by the installer)
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Build output
+build/
+dist/
+*.spec
+cratetag/_build_info.py
+
+# macOS
+.DS_Store
